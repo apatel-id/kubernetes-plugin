@@ -294,13 +294,8 @@ public class ContainerExecDecorator extends LauncherDecorator implements Seriali
                     closables = new ArrayList<>();
                 }
 
-                // JENKINS-50429 Force a bigger buffer
-                PipedInputStream pis = new PipedInputStream(STDIN_BUFFER_SIZE);
-                closables.add(pis);
-
                 Execable<String, ExecWatch> execable = client.pods().inNamespace(namespace).withName(podName).inContainer(containerName) //
-                        .readingInput(pis)
-                        // .redirectingInput() // JENKINS-50429
+                        .redirectingInput(STDIN_BUFFER_SIZE) // JENKINS-50429
                         .writingOutput(stream).writingError(stream).writingErrorChannel(error)
                         .usingListener(new ExecListener() {
                             @Override
@@ -340,7 +335,6 @@ public class ContainerExecDecorator extends LauncherDecorator implements Seriali
                 try {
                     watch = execable.exec(getShell());
                 } catch (KubernetesClientException e) {
-                    close();
                     if (e.getCause() instanceof InterruptedException) {
                         throw new IOException(
                                 "Interrupted while starting websocket connection, you should increase the Max connections to Kubernetes API",
@@ -349,7 +343,6 @@ public class ContainerExecDecorator extends LauncherDecorator implements Seriali
                         throw e;
                     }
                 } catch (RejectedExecutionException e) {
-                    close();
                     throw new IOException(
                             "Connection was rejected, you should increase the Max connections to Kubernetes API", e);
                 }
@@ -359,7 +352,6 @@ public class ContainerExecDecorator extends LauncherDecorator implements Seriali
                     // prevent a wait forever if the connection is closed as the listener would never be called
                     hasStarted = started.await(WEBSOCKET_CONNECTION_TIMEOUT, TimeUnit.SECONDS);
                 } catch (InterruptedException e) {
-                    close();
                     closeWatch(watch);
                     throw new IOException(
                             "Interrupted while waiting for websocket connection, you should increase the Max connections to Kubernetes API",
@@ -372,8 +364,8 @@ public class ContainerExecDecorator extends LauncherDecorator implements Seriali
                             "Websocket connection was not established. This probably means the connection was closed already");
                 }
 
-                try (OutputStream stdin = new PipedOutputStream(pis);) {
-                    // OutputStream stdin = watch.getInput();
+                try {
+                    OutputStream stdin = watch.getInput();
                     if (pwd != null) {
                         // We need to get into the project workspace.
                         // The workspace is not known in advance, so we have to execute a cd command.
@@ -415,10 +407,8 @@ public class ContainerExecDecorator extends LauncherDecorator implements Seriali
                     closables.add(proc);
                     return proc;
                 } catch (InterruptedException ie) {
-                    close();
                     throw new InterruptedIOException(ie.getMessage());
                 } catch (Exception e) {
-                    close();
                     closeWatch(watch);
                     throw e;
                 }
